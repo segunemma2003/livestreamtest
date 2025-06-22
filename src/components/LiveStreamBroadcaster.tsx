@@ -1,17 +1,16 @@
-// src/components/LiveStreamViewer.tsx - Working version with correct API
+// src/components/LiveStreamBroadcaster.tsx - Fixed broadcaster component
 import React, { useEffect, useRef, useState } from 'react'
 import { 
   Room, 
-  RemoteTrack, 
-  RemoteParticipant, 
-  LocalParticipant,
+  LocalTrack,
   RoomEvent,
   Track,
   ConnectionState,
-  RemoteTrackPublication
+  createLocalVideoTrack,
+  createLocalAudioTrack
 } from 'livekit-client'
 
-interface LiveStreamViewerProps {
+interface LiveStreamBroadcasterProps {
   roomName: string
   token: string
   serverUrl: string
@@ -26,21 +25,26 @@ interface ChatMessage {
   timestamp: string
 }
 
-const LiveStreamViewer: React.FC<LiveStreamViewerProps> = ({
+const LiveStreamBroadcaster: React.FC<LiveStreamBroadcasterProps> = ({
   roomName,
   token,
   serverUrl,
-  userName = 'Anonymous',
+  userName = 'Broadcaster',
   onDisconnect
 }) => {
   const [room, setRoom] = useState<Room | null>(null)
   const [connected, setConnected] = useState(false)
-  const [participants, setParticipants] = useState<RemoteParticipant[]>([])
+  const [isStreaming, setIsStreaming] = useState(false)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Disconnected)
+  const [videoEnabled, setVideoEnabled] = useState(true)
+  const [audioEnabled, setAudioEnabled] = useState(true)
+  const [viewerCount, setViewerCount] = useState(0)
   
-  const videoContainerRef = useRef<HTMLDivElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoTrack = useRef<LocalTrack | null>(null)
+  const audioTrack = useRef<LocalTrack | null>(null)
 
   useEffect(() => {
     if (!token || !serverUrl) return
@@ -61,38 +65,19 @@ const LiveStreamViewer: React.FC<LiveStreamViewerProps> = ({
           console.log('Disconnected from room')
           setConnected(false)
           setConnectionState(ConnectionState.Disconnected)
+          setIsStreaming(false)
           onDisconnect?.()
         })
 
-        newRoom.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
-          console.log('Participant connected:', participant.identity)
-          setParticipants(prev => [...prev, participant])
+        newRoom.on(RoomEvent.ParticipantConnected, () => {
+          setViewerCount(prev => prev + 1)
         })
 
-        newRoom.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
-          console.log('Participant disconnected:', participant.identity)
-          setParticipants(prev => prev.filter(p => p.identity !== participant.identity))
+        newRoom.on(RoomEvent.ParticipantDisconnected, () => {
+          setViewerCount(prev => Math.max(0, prev - 1))
         })
 
-        newRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
-          console.log('Track subscribed:', track.kind, participant.identity)
-          
-          if (track.kind === Track.Kind.Video && videoContainerRef.current) {
-            const videoElement = track.attach()
-            videoElement.style.width = '100%'
-            videoElement.style.height = 'auto'
-            videoElement.style.borderRadius = '8px'
-            videoElement.style.objectFit = 'contain'
-            videoContainerRef.current.appendChild(videoElement)
-          }
-        })
-
-        newRoom.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
-          console.log('Track unsubscribed:', track.kind)
-          track.detach()
-        })
-
-        newRoom.on(RoomEvent.DataReceived, (payload: Uint8Array, participant?: RemoteParticipant) => {
+        newRoom.on(RoomEvent.DataReceived, (payload: Uint8Array, participant) => {
           try {
             const message = JSON.parse(new TextDecoder().decode(payload))
             
@@ -130,8 +115,97 @@ const LiveStreamViewer: React.FC<LiveStreamViewerProps> = ({
       if (room) {
         room.disconnect()
       }
+      if (videoTrack.current) {
+        videoTrack.current.stop()
+      }
+      if (audioTrack.current) {
+        audioTrack.current.stop()
+      }
     }
   }, [token, serverUrl, roomName])
+
+  const startStreaming = async () => {
+    if (!room || !connected) return
+
+    try {
+      // Create video track
+      if (videoEnabled) {
+        videoTrack.current = await createLocalVideoTrack({
+          resolution: {
+            width: 1280,
+            height: 720
+          },
+          facingMode: 'user'
+        })
+        
+        if (videoRef.current) {
+          videoTrack.current.attach(videoRef.current)
+        }
+        
+        await room.localParticipant.publishTrack(videoTrack.current)
+      }
+
+      // Create audio track
+      if (audioEnabled) {
+        audioTrack.current = await createLocalAudioTrack()
+        await room.localParticipant.publishTrack(audioTrack.current)
+      }
+
+      setIsStreaming(true)
+      console.log('Started streaming')
+      
+    } catch (error) {
+      console.error('Failed to start streaming:', error)
+      alert('Failed to start streaming. Please check camera/microphone permissions.')
+    }
+  }
+
+  const stopStreaming = async () => {
+    if (!room) return
+
+    try {
+      // Unpublish tracks
+      if (videoTrack.current) {
+        await room.localParticipant.unpublishTrack(videoTrack.current)
+        videoTrack.current.stop()
+        videoTrack.current = null
+      }
+
+      if (audioTrack.current) {
+        await room.localParticipant.unpublishTrack(audioTrack.current)
+        audioTrack.current.stop()
+        audioTrack.current = null
+      }
+
+      setIsStreaming(false)
+      console.log('Stopped streaming')
+      
+    } catch (error) {
+      console.error('Failed to stop streaming:', error)
+    }
+  }
+
+  const toggleVideo = async () => {
+    if (!videoTrack.current) return
+    
+    if (videoEnabled) {
+      await videoTrack.current.mute()
+    } else {
+      await videoTrack.current.unmute()
+    }
+    setVideoEnabled(!videoEnabled)
+  }
+
+  const toggleAudio = async () => {
+    if (!audioTrack.current) return
+    
+    if (audioEnabled) {
+      await audioTrack.current.mute()
+    } else {
+      await audioTrack.current.unmute()
+    }
+    setAudioEnabled(!audioEnabled)
+  }
 
   const sendChatMessage = async () => {
     if (!room || !chatInput.trim()) return
@@ -166,29 +240,6 @@ const LiveStreamViewer: React.FC<LiveStreamViewerProps> = ({
     }
   }
 
-  const sendReaction = async (reaction: string) => {
-    if (!room) return
-
-    try {
-      const message = {
-        type: 'reaction',
-        data: {
-          user: { username: userName },
-          reaction_type: reaction,
-          timestamp: new Date().toISOString()
-        }
-      }
-
-      const encoder = new TextEncoder()
-      const data = encoder.encode(JSON.stringify(message))
-      
-      await room.localParticipant.publishData(data, { reliable: false })
-      
-    } catch (error) {
-      console.error('Failed to send reaction:', error)
-    }
-  }
-
   const disconnect = () => {
     if (room) {
       room.disconnect()
@@ -213,51 +264,93 @@ const LiveStreamViewer: React.FC<LiveStreamViewerProps> = ({
       {/* Header */}
       <div className="bg-gray-800 p-4 flex justify-between items-center">
         <div>
-          <h1 className="text-xl font-bold">{roomName}</h1>
+          <h1 className="text-xl font-bold">Broadcasting: {roomName}</h1>
           <p className={`text-sm ${getConnectionStatusColor()}`}>
-            {connectionState} • {participants.length + (connected ? 1 : 0)} viewers
+            {connectionState} • {viewerCount} viewers
           </p>
         </div>
-        <button
-          onClick={disconnect}
-          className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded"
-        >
-          Disconnect
-        </button>
+        <div className="flex space-x-2">
+          {isStreaming ? (
+            <button
+              onClick={stopStreaming}
+              className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded flex items-center space-x-2"
+            >
+              <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>
+              <span>Stop Stream</span>
+            </button>
+          ) : (
+            <button
+              onClick={startStreaming}
+              disabled={!connected}
+              className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 px-4 py-2 rounded"
+            >
+              Start Stream
+            </button>
+          )}
+          <button
+            onClick={disconnect}
+            className="bg-gray-600 hover:bg-gray-700 px-4 py-2 rounded"
+          >
+            Disconnect
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
         {/* Video Area */}
         <div className="flex-1 bg-black relative">
-          <div ref={videoContainerRef} className="w-full h-full flex items-center justify-center">
-            {!connected && (
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            playsInline
+            className="w-full h-full object-contain"
+            style={{ transform: 'scaleX(-1)' }} // Mirror for broadcaster
+          />
+          
+          {!isStreaming && (
+            <div className="absolute inset-0 flex items-center justify-center">
               <div className="text-gray-400 text-center">
                 <div className="text-6xl mb-4">📹</div>
-                <p>Connecting to stream...</p>
+                <p className="text-xl mb-2">Ready to Stream</p>
+                <p className="text-sm">Click "Start Stream" to begin broadcasting</p>
               </div>
-            )}
-            {connected && participants.length === 0 && (
-              <div className="text-gray-400 text-center">
-                <div className="text-6xl mb-4">🎥</div>
-                <p>Waiting for stream to start...</p>
-                <p className="text-sm mt-2">Connected and ready to view</p>
-              </div>
-            )}
-          </div>
-          
-          {/* Reactions Overlay */}
+            </div>
+          )}
+
+          {/* Stream Controls */}
           <div className="absolute bottom-4 left-4 flex space-x-2">
-            {['👍', '❤️', '😂', '😮', '👏', '🔥'].map((emoji) => (
-              <button
-                key={emoji}
-                onClick={() => sendReaction(emoji)}
-                className="bg-black bg-opacity-50 hover:bg-opacity-75 rounded-full p-2 text-2xl transition-all duration-200 hover:scale-110"
-                disabled={!connected}
-              >
-                {emoji}
-              </button>
-            ))}
+            <button
+              onClick={toggleVideo}
+              disabled={!isStreaming}
+              className={`p-3 rounded-full ${
+                videoEnabled 
+                  ? 'bg-blue-600 hover:bg-blue-700' 
+                  : 'bg-red-600 hover:bg-red-700'
+              } disabled:bg-gray-600 transition-colors`}
+            >
+              {videoEnabled ? '📹' : '📵'}
+            </button>
+            <button
+              onClick={toggleAudio}
+              disabled={!isStreaming}
+              className={`p-3 rounded-full ${
+                audioEnabled 
+                  ? 'bg-blue-600 hover:bg-blue-700' 
+                  : 'bg-red-600 hover:bg-red-700'
+              } disabled:bg-gray-600 transition-colors`}
+            >
+              {audioEnabled ? '🎤' : '🔇'}
+            </button>
           </div>
+
+          {/* Live Indicator */}
+          {isStreaming && (
+            <div className="absolute top-4 left-4 bg-red-600 px-3 py-1 rounded-full flex items-center space-x-2">
+              <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>
+              <span className="text-sm font-medium">LIVE</span>
+            </div>
+          )}
         </div>
 
         {/* Chat Sidebar */}
@@ -289,7 +382,7 @@ const LiveStreamViewer: React.FC<LiveStreamViewerProps> = ({
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
-                placeholder="Type a message..."
+                placeholder="Message your viewers..."
                 className="flex-1 bg-gray-700 text-white px-3 py-2 rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
                 disabled={!connected}
               />
@@ -308,4 +401,4 @@ const LiveStreamViewer: React.FC<LiveStreamViewerProps> = ({
   )
 }
 
-export default LiveStreamViewer
+export default LiveStreamBroadcaster

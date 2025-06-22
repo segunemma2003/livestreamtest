@@ -10,13 +10,13 @@ export default defineConfig({
     proxy: {
       // Proxy API calls to Django backend
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://192.168.1.170:8000',
         changeOrigin: true,
         secure: false,
       },
       // Proxy WebSocket connections to livestream service
       '/ws': {
-        target: 'ws://localhost:8001',
+        target: 'ws://192.168.1.100:7880',
         ws: true,
         changeOrigin: true,
       }
@@ -28,6 +28,6 @@ export default defineConfig({
   },
   define: {
     // Define global constants
-    __APP_VERSION__: JSON.stringify(process.env.npm_package_version),
+    __APP_VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.0'),
   }
 })
